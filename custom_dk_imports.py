@@ -165,32 +165,34 @@ class MSELoss(torch.nn.modules.loss._Loss):
 
 # Define necessary parts from trainers.py
 class NewLoss(nn.modules.loss._Loss):
-    def __init__(self) -> None:
+    def __init__(self, X_train: np.ndarray, X_test: np.ndarray, y_train: np.ndarray) -> None:
         super(NewLoss, self).__init__()
-    
-    def forward(self, X_train: torch.Tensor, X_test: torch.Tensor, y_pred: torch.Tensor, y_train: torch.Tensor) -> torch.Tensor:
-        # mse = torch.mean((y_pred - y_true) ** 2)
-        # bce = torch.sum(torch.log(torch.sigmoid(y_true)), torch.log(1 - torch.sigmoid(y_pred)))
-        # return mse + bce
+        self.X_train = torch.tensor(X_train, dtype=torch.float32)
+        self.X_test = torch.tensor(X_test, dtype=torch.float32)
+        self.y_train = torch.tensor(y_train, dtype=torch.float32)
 
-        observed = np.arange(X_train.shape[0])
-        M = np.zeros(X_train.shape[0] + X_test.shape[0])
-        M[observed] = 1
-        M = torch.tensor(M, dtype=torch.float32)
-
-        observation_matching = MSELoss()
-
-        y_train_pt = torch.tensor(y_train, dtype=torch.float32)
+        self.observed = np.arange(self.X_train.shape[0])
         X_combined = np.vstack((X_train, X_test))
         K_combined = RBFkernel(X_combined, X_combined, l=1., sigma_f=1., noise=True, sigma_n=0.01)
-        K_inv_pt = torch.inverse(torch.tensor(K_combined, dtype=torch.float32))
+        self.K_inv_pt = torch.inverse(torch.tensor(K_combined, dtype=torch.float32))
 
-        loss_1 = 0.5 * torch.matmul(torch.matmul(y_pred, K_inv_pt), y_pred) / y_pred.shape[0]
-        loss_2 = observation_matching(y_train_pt, y_pred[observed])
-        loss_3 = -torch.mean(M * torch.log(torch.sigmoid(y_pred)) + (1 - M) * torch.log(1 - torch.sigmoid(y_pred)))
+        M = np.zeros(X_train.shape[0] + X_test.shape[0])
+        M[self.observed] = 1
+        self.M = torch.tensor(M, dtype=torch.float32)
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        observation_matching = MSELoss()
+
+        # Compute loss over mini-batch instead of the entire dataset
+        loss_1 = 0.5 * torch.matmul(torch.matmul(y_pred.T, self.K_inv_pt[:y_pred.shape[0], :y_pred.shape[0]]), y_pred) / y_pred.shape[0]
+
+        loss_2 = observation_matching(self.y_train[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
+        loss_3 = -torch.mean(self.M[:y_pred.shape[0]] * torch.log(torch.sigmoid(y_pred)) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - torch.sigmoid(y_pred)))
+
         loss = loss_1 + loss_2 + loss_3
         return loss
     
+
 class SpatialDataset(torch.utils.data.Dataset):
     def __init__(self, s: np.ndarray, y: np.ndarray) -> None:
         self.s: np.ndarray = s
