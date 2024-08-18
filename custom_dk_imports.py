@@ -30,6 +30,7 @@ ACTIVATIONS = {
     "softplus": nn.Softplus(),
     "softmax": nn.Softmax(),
     "erf": Erf(),
+    "identity": nn.Identity(),
 }
 
 TRAIN = 'train'
@@ -140,14 +141,15 @@ class DeepKrigingMLP(MLP):
         self.K: int = K
         super(DeepKrigingMLP, self).__init__(input_dim, num_hidden_layers, hidden_dims, batch_norm, 
                                              p_dropout, activation)
+        self.input_dim: int = input_dim
         self._build_layers()
     
     def _build_layers(self) -> None:
         super(DeepKrigingMLP, self)._build_layers()
-        self.embedding = DeepKrigingEmbedding2D(self.K)
+        # self.embedding = DeepKrigingEmbedding2D(self.K)
         out_feature = self.hidden_dims[0] if isinstance(self.hidden_dims, List) else self.hidden_dims
         self.mlp_layers[0] = nn.Linear(
-            self.mlp_layers[0].in_features + sum(self.embedding.num_basis), out_feature
+            self.input_dim, out_feature
         )
     
     # def forward(self, s: torch.Tensor) -> torch.Tensor:
@@ -657,7 +659,8 @@ class Trainer(BaseTrainer):
             #     y_pred = self.model(t, x, s).float()
             # else:
             #     y_pred = self.model(t, x, s, features, edge_indices).float()
-            y_pred = self.model(phi).float()
+            y_pred = self.model(phi).float().squeeze()
+            # print(y_pred.shape, y.shape)
             assert y_pred.shape == y.shape, "The shape of the prediction must be the same as the target"
             loss = self.loss_fn(y_pred, y.float())
             # Backward pass
@@ -733,7 +736,7 @@ class Trainer(BaseTrainer):
                 #     features, edge_indices = samples[4].squeeze(0), samples[5].squeeze(0)
                 # if not hasattr(self.model,'f_network_type') or self.model.f_network_type != 'gcn':
                 #     y_pred = self.model(t, x, s).float()
-                y_pred = self.model(phi).float()
+                y_pred = self.model(phi).float().squeeze()
                 y_val_pred = torch.cat((y_val_pred, y_pred), dim=0)
                 y_val_true = torch.cat((y_val_true, y), dim=0)
 
