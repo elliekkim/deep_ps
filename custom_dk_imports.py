@@ -171,29 +171,36 @@ class MSELoss(torch.nn.modules.loss._Loss):
 
 # Define necessary parts from trainers.py
 class NewLoss(nn.modules.loss._Loss):
-    def __init__(self, X_train: np.ndarray, X_test: np.ndarray, y_train: np.ndarray) -> None:
+    def __init__(self, phi_all, X_train: np.ndarray, X_test: np.ndarray, y_train: np.ndarray) -> None:
         super(NewLoss, self).__init__()
-        self.X_train = torch.tensor(X_train, dtype=torch.float32)
-        self.X_test = torch.tensor(X_test, dtype=torch.float32)
-        self.y_train = torch.tensor(y_train, dtype=torch.float32)
+        self.X_train = torch.tensor(X_train, dtype=torch.float32).clone().detach().requires_grad_(True)
+        self.X_test = torch.tensor(X_test, dtype=torch.float32).clone().detach().requires_grad_(True)
+        self.y_train = torch.tensor(y_train, dtype=torch.float32).clone().detach().requires_grad_(True)
 
-        self.observed = np.arange(self.X_train.shape[0])
+        self.observed = np.arange(self.X_train.shape[0]) # grid_points.shape
         X_combined = np.vstack((X_train, X_test))
         K_combined = RBFkernel(X_combined, X_combined, l=1., sigma_f=1., noise=True, sigma_n=0.01)
         self.K_inv_pt = torch.inverse(torch.tensor(K_combined, dtype=torch.float32))
 
-        M = np.zeros(X_train.shape[0] + X_test.shape[0])
+        M = np.zeros(X_train.shape[0] + X_test.shape[0])  # M = [1,1,1,1,..., 1,0,0,0,0...,0] with X_train.shape[0] 1's
+        # Suggestion: Figure out how to use Bernoulli Process to describe which data points are observed (distinct from which data points are SAMPLED)
         M[self.observed] = 1
         self.M = torch.tensor(M, dtype=torch.float32)
 
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, scaling: float, scaling_intercept: float) -> torch.Tensor:
         observation_matching = MSELoss()
+
+        # trainable parameters for the observation link to z
+        scaling = torch.tensor(scaling, requires_grad=False, dtype=torch.float32)
+        intercept = torch.tensor(scaling_intercept, requires_grad=False, dtype=torch.float32)
 
         # Compute loss over mini-batch instead of the entire dataset
         loss_1 = 0.5 * torch.matmul(torch.matmul(y_pred.T, self.K_inv_pt[:y_pred.shape[0], :y_pred.shape[0]]), y_pred) / y_pred.shape[0]
 
-        loss_2 = observation_matching(self.y_train[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
-        loss_3 = -torch.mean(self.M[:y_pred.shape[0]] * torch.log(torch.sigmoid(y_pred)) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - torch.sigmoid(y_pred)))
+        # loss_2 = observation_matching(self.y_train[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
+        loss_2 = observation_matching(y_true[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
+        loss_3 = -torch.mean(self.M[:y_pred.shape[0]] * torch.log(torch.sigmoid(intercept + scaling*y_pred)) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - torch.sigmoid(intercept+ scaling*y_pred)))
 
         loss = loss_1 + loss_2 + loss_3
         return loss
