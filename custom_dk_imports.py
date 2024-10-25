@@ -50,19 +50,20 @@ OPTIMIZERS = {
     'rprop': torch.optim.Rprop,
 }
 
-# define an RBF kernel function in numpy
+# define an RBF kernel function in pytorch
 def RBFkernel(x1, x2, l=1.0, sigma_f=1.0, sigma_n=1e-2, noise=False):
-    # compute squared distance between points in x1 and x2
-    sqdist = np.sum(x1**2, 1).reshape(-1, 1) + np.sum(x2**2, 1) - 2 * np.dot(x1, x2.T)
-    if noise == True: # If noise=True, add noise to cov matrix by incrementing diagonal elements by (sigma_n)^2, where x1 and x2 points are identical:
-        sig_tmp=sigma_f**2 * np.exp(-0.5 / l**2 * sqdist)
-        for i,x1i in enumerate(x1):
-            for j,x2j in enumerate(x2):
-                if np.array_equal(x1i,x2j):
-                    sig_tmp[i,j]+=sigma_n**2
-        return sig_tmp
-    else: # if noise=False, the covariance matrix is computed directly (without noise included)
-        return sigma_f**2 * np.exp(-0.5 / l**2 * sqdist)
+    # Compute squared distance between points in x1 and x2 using PyTorch
+    sqdist = torch.sum(x1**2, dim=1).reshape(-1, 1) + torch.sum(x2**2, dim=1) - 2 * torch.mm(x1, x2.T)
+    
+    # Compute covariance matrix
+    K = sigma_f**2 * torch.exp(-0.5 / l**2 * sqdist)
+    
+    if noise:
+        # Add noise to the diagonal elements where x1 and x2 are identical
+        diag_indices = torch.arange(x1.shape[0])
+        K[diag_indices, diag_indices] += sigma_n**2  # Add noise to diagonal elements
+    
+    return K
 
 # Define necessary parts from nn.py
 class DeepKrigingEmbedding2D(nn.Module):
@@ -171,61 +172,44 @@ class MSELoss(torch.nn.modules.loss._Loss):
 
 # Define necessary parts from trainers.py
 class NewLoss(nn.modules.loss._Loss):
-    def __init__(self, phi_all, X_train: np.ndarray, X_test: np.ndarray, y_train: np.ndarray) -> None:
+    def __init__(self, s_train: np.ndarray, observed_indices: np.ndarray, s_all: np.ndarray, y_train: np.ndarray) -> None:
+        # s_all contains all grid points, s_train contains only the observed (sampled) grid points
         super(NewLoss, self).__init__()
-        self.X_train = torch.tensor(X_train, dtype=torch.float32).clone().detach().requires_grad_(True)
-        self.X_test = torch.tensor(X_test, dtype=torch.float32).clone().detach().requires_grad_(True)
+        self.s_train = torch.tensor(s_train, dtype=torch.float32).clone().detach().requires_grad_(True)
+        self.s_all = torch.tensor(s_all, dtype=torch.float32).clone().detach().requires_grad_(True)
         self.y_train = torch.tensor(y_train, dtype=torch.float32).clone().detach().requires_grad_(True)
 
-        self.observed = np.arange(self.X_train.shape[0]) # grid_points.shape
-        X_combined = np.vstack((X_train, X_test))
-        K_combined = RBFkernel(X_combined, X_combined, l=1., sigma_f=1., noise=True, sigma_n=0.01)
-        self.K_inv_pt = torch.inverse(torch.tensor(K_combined, dtype=torch.float32))
+        self.observed = observed_indices
 
-        M = np.zeros(X_train.shape[0] + X_test.shape[0])  # M = [1,1,1,1,..., 1,0,0,0,0...,0] with X_train.shape[0] 1's
-        # Suggestion: Figure out how to use Bernoulli Process to describe which data points are observed (distinct from which data points are SAMPLED)
+        M = np.zeros(len(s_all))
         M[self.observed] = 1
         self.M = torch.tensor(M, dtype=torch.float32)
 
+        # Trainable parameters for the sigmoid
+        self.alpha = nn.Parameter(torch.tensor(0.0))  # Initialize alpha
+        self.beta = nn.Parameter(torch.tensor(1.0))   # Initialize beta
 
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, scaling: float, scaling_intercept: float) -> torch.Tensor:
+        # Trainable scaling terms for MSE and BCE losses
+        self.lambda_mse = nn.Parameter(torch.tensor(1.0))  # Scaling for MSE
+        self.lambda_bce = nn.Parameter(torch.tensor(0.1))  # Scaling for BCE
+
+
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
         observation_matching = MSELoss()
 
-        # trainable parameters for the observation link to z
-        scaling = torch.tensor(scaling, requires_grad=False, dtype=torch.float32)
-        intercept = torch.tensor(scaling_intercept, requires_grad=False, dtype=torch.float32)
+        sig = torch.sigmoid(self.alpha + self.beta * y_pred)
 
         # Compute loss over mini-batch instead of the entire dataset
-        loss_1 = 0.5 * torch.matmul(torch.matmul(y_pred.T, self.K_inv_pt[:y_pred.shape[0], :y_pred.shape[0]]), y_pred) / y_pred.shape[0]
+        # loss_1 = 0.5 * torch.matmul(torch.matmul(y_pred.T, self.K_inv_pt[:y_pred.shape[0], :y_pred.shape[0]]), y_pred) / y_pred.shape[0]
 
-        # loss_2 = observation_matching(self.y_train[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
         loss_2 = observation_matching(y_true[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
-        loss_3 = -torch.mean(self.M[:y_pred.shape[0]] * torch.log(torch.sigmoid(intercept + scaling*y_pred)) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - torch.sigmoid(intercept+ scaling*y_pred)))
+        loss_3 = -torch.mean(self.M[:y_pred.shape[0]] * torch.log(sig) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - sig))
 
-        loss = loss_1 + loss_2 + loss_3
+        # Combine losses with trainable scaling params
+        loss = self.lambda_mse * loss_2 + self.lambda_bce * loss_3
         return loss
     
-
-# class SpatialDataset(torch.utils.data.Dataset):
-#     def __init__(self, s: np.ndarray, y: np.ndarray) -> None:
-#         self.s: np.ndarray = s
-#         self.y: np.ndarray = y
-
-#     def _validate_and_preprocess_inputs(self) -> None:
-#         assert len(self.s) == len(self.y), \
-#             "Spatial features and targets must be the same length"
-
-#     def __len__(self):
-#         return len(self.y)
-
-#     def __getitem__(self, idx) -> Tuple:
-#         if torch.is_tensor(idx):
-#             idx = idx.tolist()
-#         batch = torch.from_numpy(self.s[idx]).float() if isinstance(self.s[idx], np.ndarray) else torch.tensor(self.s[idx]), \
-#             torch.from_numpy(self.y[idx]).float() if isinstance(self.y[idx], np.ndarray) else torch.tensor(self.y[idx])
-#         return batch
-
-
     
 def train_val_test_split(t: List, x: np.ndarray, s: np.ndarray, y: np.ndarray, train_size: float = 0.7,
                          val_size: float = 0.15, test_size: float = 0.15, shuffle: bool = True, random_state: int = 2020, 
@@ -345,109 +329,6 @@ def spatial_train_val_test_split(s: np.ndarray, y: np.ndarray, train_size: float
         return s_train, s_val, s_test, y_train, y_val, y_test, test_idx
     else:
         return s_train, s_val, s_test, y_train, y_val, y_test
-
-# import logging
-# class Trainer:
-#     def __init__(self, model: nn.Module, train_loader: torch.utils.data.DataLoader, val_loader: torch.utils.data.DataLoader,
-#                  optim: str, optim_params: dict, lr_scheduler: torch.optim.lr_scheduler._LRScheduler = None,
-#                  model_save_dir: str = None, model_name: str = 'model.pt', 
-#                  loss_fn: nn.modules.loss._Loss = nn.MSELoss(), device: torch.device = torch.device('cpu'), 
-#                  epochs: int = 100, patience: int = 10, logger: logging.Logger = logging.getLogger("Trainer"), 
-#                  wandb: object = None) -> None:
-#         self.model: nn.Module = model
-#         self.train_loader: torch.utils.data.DataLoader = train_loader
-#         self.val_loader: torch.utils.data.DataLoader = val_loader
-#         self.optim: str = optim
-#         self.optim_params: dict = optim_params
-#         self.lr_scheduler: torch.optim.lr_scheduler._LRScheduler = lr_scheduler
-#         self.model_save_dir: str = model_save_dir
-#         self.model_name: str = model_name
-#         self.loss_fn: nn.modules.loss._Loss = loss_fn
-#         self.device: torch.device = device
-#         self.epochs: int = epochs
-#         self.patience: int = patience
-#         self.logger: logging.Logger = logger
-#         self.wandb: object = wandb
-        
-#         self.logger.setLevel(logging.INFO)
-#         if self.logger.hasHandlers():
-#             self.logger.handlers.clear()
-#         self.logger.addHandler(logging.StreamHandler(stream=sys.stdout))
-#         if self.model_save_dir is not None and not os.path.exists(self.model_save_dir):
-#             os.makedirs(self.model_save_dir)
-        
-#         self._register_wandb_params()
-#         self._set_optimizer()
-
-#     def _register_wandb_params(self) -> None:
-#         if self.wandb is not None:
-#             self.wandb.config.update({
-#                 "optimizer": self.optim,
-#                 "optimizer_params": self.optim_params,
-#                 "loss_fn": self.loss_fn,
-#                 "epochs": self.epochs,
-#                 "patience": self.patience
-#             }, allow_val_change=True)
-    
-#     def _set_optimizer(self) -> None:
-#         OPTIMIZERS = {
-#             'adam': torch.optim.Adam,
-#             'sgd': torch.optim.SGD,
-#             # Add other optimizers as needed
-#         }
-#         if self.optim not in OPTIMIZERS:
-#             raise ValueError(f"Unsupported optimizer: {self.optim}")
-#         self.optimizer = OPTIMIZERS[self.optim](self.model.parameters(), **self.optim_params)
-
-#     def train(self) -> None:
-#         best_loss = float('inf')
-#         best_model_state_dict = None
-#         trigger_times = 0
-        
-#         self.logger.info("Training started:\n")
-#         for epoch in range(self.epochs):
-#             train_loss = self._train_step()
-#             val_loss = self.validate()
-#             if self.lr_scheduler is not None:
-#                 self.lr_scheduler.step()
-#             if val_loss > best_loss:
-#                 trigger_times += 1
-#                 if trigger_times >= self.patience:
-#                     self.logger.info("Early stopping - patience reached")
-#                     if best_model_state_dict is not None:
-#                         self.logger.info("Restoring the best model")
-#                         self.model.load_state_dict(best_model_state_dict)
-#                     if self.model_save_dir is not None:
-#                         self.logger.info("Saving the best model")
-#                         torch.save(best_model_state_dict, os.path.join(self.model_save_dir, self.model_name))
-#                     break
-#             else:
-#                 trigger_times = 0
-#                 best_loss = val_loss
-#                 best_model_state_dict = self.model.state_dict()
-
-#     def validate(self) -> float:
-#         self.model.eval()
-#         val_loss = 0.0
-#         with torch.no_grad():
-#             for s, y in self.val_loader:
-#                 s, y = s.to(self.device), y.to(self.device).view(-1)
-#                 y_pred = self.model(s).float()
-#                 val_loss += self.loss_fn(y_pred, y.float()).item()
-#         return val_loss / len(self.val_loader)
-
-#     def _train_step(self) -> float:
-#         self.model.train()
-#         train_loss = 0.0
-#         for s, y in self.train_loader:
-#             s, y = s.to(self.device), y.to(self.device).view(-1)
-#             self.optimizer.zero_grad()
-#             y_pred = self.model(s).float()
-#             loss = self.loss_fn(y_pred, y.float())
-#             loss.backward()
-#             self.optimizer.step()
-#             train_loss += loss.item()
-#         return train_loss / len(self.train_loader)
 
 
 from abc import ABC, abstractmethod
@@ -739,10 +620,6 @@ class Trainer(BaseTrainer):
             for batch in self.data_generators[VAL]:
                 samples = self._assign_device_to_data(*batch)
                 phi, y = samples[0], samples[1].view(-1)
-                # if hasattr(self.model,'f_network_type') and self.model.f_network_type == 'gcn':
-                #     features, edge_indices = samples[4].squeeze(0), samples[5].squeeze(0)
-                # if not hasattr(self.model,'f_network_type') or self.model.f_network_type != 'gcn':
-                #     y_pred = self.model(t, x, s).float()
                 y_pred = self.model(phi).float().squeeze()
                 y_val_pred = torch.cat((y_val_pred, y_pred), dim=0)
                 y_val_true = torch.cat((y_val_true, y), dim=0)
