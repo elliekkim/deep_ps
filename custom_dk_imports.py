@@ -169,46 +169,46 @@ class MSELoss(torch.nn.modules.loss._Loss):
     
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
         return torch.mean((y_pred - y_true) ** 2)
-
-# Define necessary parts from trainers.py
+    
 class NewLoss(nn.modules.loss._Loss):
     def __init__(self, s_train: np.ndarray, observed_indices: np.ndarray, s_all: np.ndarray, y_train: np.ndarray) -> None:
-        # s_all contains all grid points, s_train contains only the observed (sampled) grid points
         super(NewLoss, self).__init__()
         self.s_train = torch.tensor(s_train, dtype=torch.float32).clone().detach().requires_grad_(True)
         self.s_all = torch.tensor(s_all, dtype=torch.float32).clone().detach().requires_grad_(True)
         self.y_train = torch.tensor(y_train, dtype=torch.float32).clone().detach().requires_grad_(True)
-
         self.observed = observed_indices
 
         M = np.zeros(len(s_all))
         M[self.observed] = 1
         self.M = torch.tensor(M, dtype=torch.float32)
 
-        # Trainable parameters for the sigmoid
         self.alpha = nn.Parameter(torch.tensor(0.0))  # Initialize alpha
         self.beta = nn.Parameter(torch.tensor(1.0))   # Initialize beta
-
-        # Trainable scaling terms for MSE and BCE losses
-        self.lambda_mse = nn.Parameter(torch.tensor(1.0))  # Scaling for MSE
-        self.lambda_bce = nn.Parameter(torch.tensor(0.1))  # Scaling for BCE
-
-
+        # self.lambda_mse = nn.Parameter(torch.tensor(1.0))  # Scaling for MSE
+        # self.lambda_bce = nn.Parameter(torch.tensor(0.1))  # Scaling for BCE
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        observation_matching = MSELoss()
-
+        observation_matching = nn.MSELoss()
+        
+        # Predicted selection probability
         sig = torch.sigmoid(self.alpha + self.beta * y_pred)
+        
+        # Loss over observed data points (MSE between predicted and true values at observed locations)
+        loss_observation = observation_matching(y_pred, y_true)
 
-        # Compute loss over mini-batch instead of the entire dataset
-        # loss_1 = 0.5 * torch.matmul(torch.matmul(y_pred.T, self.K_inv_pt[:y_pred.shape[0], :y_pred.shape[0]]), y_pred) / y_pred.shape[0]
+        # Matching between true observations and predictions on observed points
+        loss_spatial_matching = observation_matching(y_true[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
 
-        loss_2 = observation_matching(y_true[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
-        loss_3 = -torch.mean(self.M[:y_pred.shape[0]] * torch.log(sig) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - sig))
+        # Cross-entropy term to model selection bias
+        loss_selection_bias = -torch.mean(
+            self.M[:y_pred.shape[0]] * torch.log(sig) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - sig)
+        )
 
-        # Combine losses with trainable scaling params
-        loss = self.lambda_mse * loss_2 + self.lambda_bce * loss_3
+        # Weighted loss function with scaling terms
+        # loss = loss_observation + self.lambda_mse * loss_spatial_matching + self.lambda_bce * loss_selection_bias
+        loss = loss_observation + loss_spatial_matching + loss_selection_bias
         return loss
+
     
     
 def train_val_test_split(t: List, x: np.ndarray, s: np.ndarray, y: np.ndarray, train_size: float = 0.7,
