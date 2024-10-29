@@ -429,7 +429,6 @@ class Trainer(BaseTrainer):
             batch_M = self.M_train[batch_start:batch_start + batch_size]
 
             # Compute Batch Loss
-            print(f'Compute Batch Loss')
             loss = self.loss_fn(y_pred, y.float(), M=batch_M)
 
             # Backward pass
@@ -441,9 +440,6 @@ class Trainer(BaseTrainer):
             y_train_true = torch.cat((y_train_true, y), dim=0)
 
         # Compute overall Train Loss
-        print(f'Compute overall Train Loss')
-        print(f'y_train_pred size: {y_train_pred.size()}')
-        print(f'y_train_true size: {y_train_true.size()}')
         train_loss = self.loss_fn(y_train_pred, y_train_true, M=self.M_train).item()
         return train_loss, step
     
