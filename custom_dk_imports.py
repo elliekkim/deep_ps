@@ -12,6 +12,11 @@ import time
 from typing import Tuple
 from sklearn.cluster import KMeans
 
+from abc import ABC, abstractmethod
+from typing import Dict, List, Tuple
+import scipy
+from scipy.stats import norm
+
 class Erf(nn.Module):
     def __init__(self):
         super().__init__()
@@ -160,182 +165,6 @@ class DeepKrigingMLP(MLP):
     def forward(self, phi: torch.Tensor) -> torch.Tensor:
         return self.mlp_layers(phi)
 
-class MSELoss(torch.nn.modules.loss._Loss):
-    """
-    Mean Squared Error Loss
-    """
-    def __init__(self) -> None:
-        super(MSELoss, self).__init__()
-    
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        return torch.mean((y_pred - y_true) ** 2)
-    
-class NewLoss(nn.modules.loss._Loss):
-    def __init__(self, s_train: np.ndarray, observed_indices: np.ndarray, s_all: np.ndarray, y_train: np.ndarray) -> None:
-        super(NewLoss, self).__init__()
-        self.s_train = torch.tensor(s_train, dtype=torch.float32).clone().detach().requires_grad_(True)
-        self.s_all = torch.tensor(s_all, dtype=torch.float32).clone().detach().requires_grad_(True)
-        self.y_train = torch.tensor(y_train, dtype=torch.float32).clone().detach().requires_grad_(True)
-        self.observed = observed_indices
-
-        M = np.zeros(len(s_all))
-        M[self.observed] = 1
-        self.M = torch.tensor(M, dtype=torch.float32)
-
-        self.alpha = nn.Parameter(torch.tensor(0.0))  # Initialize alpha
-        self.beta = nn.Parameter(torch.tensor(1.0))   # Initialize beta
-        # self.lambda_mse = nn.Parameter(torch.tensor(1.0))  # Scaling for MSE
-        # self.lambda_bce = nn.Parameter(torch.tensor(0.1))  # Scaling for BCE
-
-    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
-        observation_matching = nn.MSELoss()
-        
-        # Predicted selection probability
-        sig = torch.sigmoid(self.alpha + self.beta * y_pred)
-        
-        # Loss over observed data points (MSE between predicted and true values at observed locations)
-        loss_observation = observation_matching(y_pred, y_true)
-
-        # Matching between true observations and predictions on observed points
-        loss_spatial_matching = observation_matching(y_true[:y_pred.shape[0]], y_pred[:self.observed.shape[0]])
-
-        # Cross-entropy term to model selection bias
-        loss_selection_bias = -torch.mean(
-            self.M[:y_pred.shape[0]] * torch.log(sig) + (1 - self.M[:y_pred.shape[0]]) * torch.log(1 - sig)
-        )
-
-        # Weighted loss function with scaling terms
-        # loss = loss_observation + self.lambda_mse * loss_spatial_matching + self.lambda_bce * loss_selection_bias
-        loss = loss_observation + loss_spatial_matching + loss_selection_bias
-        return loss
-
-    
-    
-def train_val_test_split(t: List, x: np.ndarray, s: np.ndarray, y: np.ndarray, train_size: float = 0.7,
-                         val_size: float = 0.15, test_size: float = 0.15, shuffle: bool = True, random_state: int = 2020, 
-                         block_sampling: bool = False, num_blocks: int = 50, return_test_indices: bool = False, 
-                         graph_input: bool = False) -> Tuple:
-    """
-    Splits the dataset into training, validation, and test sets
-    If shuffle is set to True, the data will be shuffled before splitting
-    If block_sampling is set to True, the data will first be clustered into the specified number of blocks using K-means
-    and then split into training, validation, and test sets by sampling from the blocks
-    """
-    assert train_size + val_size + test_size == 1.0, "Train, validation, and test sizes must sum to 1"
-    assert all([len(feat) == len(y) for feat in t]), "Interventions and targets must be the same length"
-    assert len(x) == len(y), "Confounder and targets must be the same length"
-    assert len(s) == len(y), "Spatial features and targets must be the same length"
-
-    if shuffle:
-        np.random.seed(random_state)
-        idx = np.random.permutation(len(y))
-        t = [feat[idx] for feat in t]
-        x, s, y = x[idx], s[idx], y[idx]
-    
-    if block_sampling:
-        kmeans = KMeans(n_clusters=num_blocks, random_state=random_state).fit(s)
-        block_labels = kmeans.labels_
-        block_indices = np.arange(num_blocks)
-        train_blocks = np.random.choice(block_indices, size=int(train_size * num_blocks), replace=False)
-        block_indices = np.setdiff1d(block_indices, train_blocks)
-        val_blocks = np.random.choice(block_indices, size=int(val_size * num_blocks), replace=False)
-        test_blocks = np.setdiff1d(block_indices, val_blocks)
-        train_idx = np.where(np.isin(block_labels, train_blocks))[0]
-        val_idx = np.where(np.isin(block_labels, val_blocks))[0]
-        test_idx = np.where(np.isin(block_labels, test_blocks))[0]
-
-        t_train, x_train, s_train = [feat[train_idx] for feat in t], x[train_idx], s[train_idx]
-        t_val, x_val, s_val = [feat[val_idx] for feat in t], x[val_idx], s[val_idx]
-        t_test, x_test, s_test = [feat[test_idx] for feat in t], x[test_idx], s[test_idx]
-        y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
-    else:
-        train_idx = int(train_size * len(y))
-        val_idx = int((train_size + val_size) * len(y))
-
-        t_train, x_train, s_train = [feat[:train_idx] for feat in t], x[:train_idx], s[:train_idx]
-        t_val, x_val, s_val = [feat[train_idx:val_idx] for feat in t], x[train_idx:val_idx], s[train_idx:val_idx]
-        t_test, x_test, s_test = [feat[val_idx:] for feat in t], x[val_idx:], s[val_idx:]
-        y_train, y_val, y_test = y[:train_idx], y[train_idx:val_idx], y[val_idx:]
-
-    if not graph_input:
-        res = tuple([
-            SpatialDataset(t_train, x_train, s_train, y_train), 
-            SpatialDataset(t_val, x_val, s_val, y_val),
-            SpatialDataset(t_test, x_test, s_test, y_test)
-        ])
-    else:
-        res = tuple([
-            GraphSpatialDataset(t_train, x_train, s_train, y_train), 
-            GraphSpatialDataset(t_val, x_val, s_val, y_val),
-            GraphSpatialDataset(t_test, x_test, s_test, y_test)
-        ])
-    if return_test_indices:
-        res += (test_idx,) if block_sampling else (idx[val_idx:],)
-    return res
-
-def spatial_train_val_test_split(s: np.ndarray, y: np.ndarray, train_size: float = 0.7,
-                                 val_size: float = 0.15, test_size: float = 0.15, 
-                                 shuffle: bool = True, random_state: int = 2020, 
-                                 block_sampling: bool = False, num_blocks: int = 50, 
-                                 return_test_indices: bool = False) -> Tuple[np.ndarray, ...]:
-    """
-    Splits spatial data into training, validation, and test sets.
-    
-    Parameters:
-        s (np.ndarray): Spatial coordinates.
-        y (np.ndarray): Target values.
-        train_size (float): Proportion of data for training.
-        val_size (float): Proportion of data for validation.
-        test_size (float): Proportion of data for testing.
-        shuffle (bool): Whether to shuffle data before splitting.
-        random_state (int): Random seed for reproducibility.
-        block_sampling (bool): Whether to perform block sampling using K-means clustering.
-        num_blocks (int): Number of blocks to create if block sampling is used.
-        return_test_indices (bool): Whether to return the indices of the test set.
-    
-    Returns:
-        Tuple[np.ndarray, ...]: Training, validation, and test splits of spatial coordinates and targets.
-    """
-    assert train_size + val_size + test_size == 1.0, "Train, validation, and test sizes must sum to 1"
-    assert len(s) == len(y), "Spatial features and targets must be the same length"
-
-    if shuffle:
-        np.random.seed(random_state)
-        idx = np.random.permutation(len(y))
-        s, y = s[idx], y[idx]
-
-    if block_sampling:
-        kmeans = KMeans(n_clusters=num_blocks, random_state=random_state).fit(s)
-        block_labels = kmeans.labels_
-        block_indices = np.arange(num_blocks)
-        
-        train_blocks = np.random.choice(block_indices, size=int(train_size * num_blocks), replace=False)
-        block_indices = np.setdiff1d(block_indices, train_blocks)
-        val_blocks = np.random.choice(block_indices, size=int(val_size * num_blocks), replace=False)
-        test_blocks = np.setdiff1d(block_indices, val_blocks)
-        
-        train_idx = np.where(np.isin(block_labels, train_blocks))[0]
-        val_idx = np.where(np.isin(block_labels, val_blocks))[0]
-        test_idx = np.where(np.isin(block_labels, test_blocks))[0]
-    else:
-        train_idx = int(train_size * len(y))
-        val_idx = int((train_size + val_size) * len(y))
-        train_idx, val_idx, test_idx = np.arange(train_idx), np.arange(train_idx, val_idx), np.arange(val_idx, len(y))
-
-    s_train, s_val, s_test = s[train_idx], s[val_idx], s[test_idx]
-    y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
-
-    if return_test_indices:
-        return s_train, s_val, s_test, y_train, y_val, y_test, test_idx
-    else:
-        return s_train, s_val, s_test, y_train, y_val, y_test
-
-
-from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple
-import scipy
-from scipy.stats import norm
-
 class GeneralizedPropensityScoreModel(MLP):
     """
     Generalized Propensity Score Model
@@ -365,6 +194,54 @@ class GeneralizedPropensityScoreModel(MLP):
             mean, var = self.forward(x, s)
             return norm.pdf(t.cpu().numpy(), mean.cpu().numpy(), torch.sqrt(var).cpu().numpy())
 
+class MSELoss(torch.nn.modules.loss._Loss):
+    """
+    Mean Squared Error Loss
+    """
+    def __init__(self) -> None:
+        super(MSELoss, self).__init__()
+    
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        return torch.mean((y_pred - y_true) ** 2)
+    
+class NewLoss(nn.modules.loss._Loss):
+    def __init__(self, s_all: np.ndarray, observed_indices: np.ndarray, y_all: np.ndarray) -> None:
+        super(NewLoss, self).__init__()
+        self.s_all = torch.tensor(s_all, dtype=torch.float32).clone().detach().requires_grad_(True)
+        self.y_all = torch.tensor(y_all, dtype=torch.float32).clone().detach().requires_grad_(True)
+
+        # Default mask for the entire grid (in case no specific mask is passed)
+        M = np.zeros(len(s_all))
+        M[observed_indices] = 1
+        self.M = torch.tensor(M, dtype=torch.float32)
+
+        self.alpha = nn.Parameter(torch.tensor(0.0))  # Initialize alpha
+        self.beta = nn.Parameter(torch.tensor(1.0))   # Initialize beta
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, M: torch.Tensor = None) -> torch.Tensor:
+        observation_matching = nn.MSELoss()
+
+        # Use the provided mask `M` if given; otherwise, default to `self.M`
+        M_batch = M if M is not None else self.M
+        
+        # Compute `sig` based on `y_pred` (batch or full grid)
+        sig = torch.sigmoid(self.alpha + self.beta * y_pred)
+
+        # Ensure M_batch and sig are the same size
+        assert M_batch.shape[0] == sig.shape[0], f"Size mismatch: M_batch ({M_batch.shape[0]}) and sig ({sig.shape[0]})"
+
+        # MSE over all points
+        loss_observation = observation_matching(y_pred, y_true)
+
+        # BCE over all points
+        loss_selection_bias = -torch.mean(
+            M_batch * torch.log(sig) + (1 - M_batch) * torch.log(1 - sig)
+        )
+
+        # Weighted loss function with scaling terms
+        # loss = loss_observation + self.lambda_mse * loss_spatial_matching + self.lambda_bce * loss_selection_bias
+        loss = loss_observation + loss_selection_bias
+        return loss
 
 import logging
 class BaseTrainer(ABC):
@@ -500,10 +377,12 @@ class Trainer(BaseTrainer):
     """
     def __init__(self, model: torch.nn.Module, data_generators: Dict, optim: str, optim_params: Dict, window_size: int,
                  t_idx: int = 0, lr_scheduler: torch.optim.lr_scheduler._LRScheduler = None, model_save_dir: str = None, 
-                 model_name: str = 'model.pt', loss_fn: torch.nn.modules.loss._Loss = torch.nn.MSELoss(), 
+                 model_name: str = 'model.pt', loss_fn: torch.nn.modules.loss._Loss = torch.nn.MSELoss(), M_train: torch.Tensor = None, M_val: torch.Tensor = None,
                  gps_model: GeneralizedPropensityScoreModel = None, sw_model: scipy.stats._kde.gaussian_kde = None, 
                  device: torch.device = torch.device('cpu'), epochs: int = 100, patience: int = 10, 
                  logger: logging.Logger = logging.getLogger("Trainer"), wandb: object = None) -> None:
+        self.M_train = M_train # add M_train as input
+        self.M_val = M_val # add M_val as input
         self.window_size: int = window_size
         self.t_idx: int = t_idx
         self.gps_model: GeneralizedPropensityScoreModel = gps_model
@@ -533,32 +412,39 @@ class Trainer(BaseTrainer):
 
         for step, batch in enumerate(self.data_generators[TRAIN]):
             samples = self._assign_device_to_data(*batch)
+            
+            # Dynamically determine batch size from current batch
+            # current_batch_size = samples[0].size(0)
+            # batch_indices = torch.arange(step * current_batch_size, (step + 1) * current_batch_size)
+
             phi = samples[0]
             y = samples[1].view(-1)
-
-            # if hasattr(self.model,'f_network_type') and self.model.f_network_type == 'gcn':
-            #     if samples[4].shape[0] > 1:
-            #         raise IndexError("When using GCN, the batch size must be set to 1.")
-            #     features, edge_indices = samples[4].squeeze(0), samples[5].squeeze(0)
-            
             self.optimizer.zero_grad()
-            # Forward pass
-            # if not hasattr(self.model,'f_network_type') or self.model.f_network_type != 'gcn':
-            #     y_pred = self.model(t, x, s).float()
-            # else:
-            #     y_pred = self.model(t, x, s, features, edge_indices).float()
             y_pred = self.model(phi).float().squeeze()
-            # print(y_pred.shape, y.shape)
             assert y_pred.shape == y.shape, "The shape of the prediction must be the same as the target"
-            loss = self.loss_fn(y_pred, y.float())
+            
+            # Extract the batch-specific mask from M_train
+            batch_size = y.size(0)
+            batch_start = step * batch_size
+            batch_M = self.M_train[batch_start:batch_start + batch_size]
+
+            # Compute Batch Loss
+            print(f'Compute Batch Loss')
+            loss = self.loss_fn(y_pred, y.float(), M=batch_M)
+
             # Backward pass
             loss.backward()
             self.optimizer.step()
+            
             # Record the predictions
             y_train_pred = torch.cat((y_train_pred, y_pred), dim=0)
             y_train_true = torch.cat((y_train_true, y), dim=0)
 
-        train_loss = self.loss_fn(y_train_pred, y_train_true).item()
+        # Compute overall Train Loss
+        print(f'Compute overall Train Loss')
+        print(f'y_train_pred size: {y_train_pred.size()}')
+        print(f'y_train_true size: {y_train_true.size()}')
+        train_loss = self.loss_fn(y_train_pred, y_train_true, M=self.M_train).item()
         return train_loss, step
     
     def train(self) -> None:
@@ -625,7 +511,8 @@ class Trainer(BaseTrainer):
                 y_val_true = torch.cat((y_val_true, y), dim=0)
 
         assert y_pred.shape == y.shape, "The shape of the prediction must be the same as the target"
-        val_loss = self.loss_fn(y_val_pred, y_val_true).item()
+        # Pass M_val to NewLoss for compatibility
+        val_loss = self.loss_fn(y_val_pred, y_val_true, M=self.M_val).item()
         return val_loss
     
     def predict(self) -> np.ndarray:
