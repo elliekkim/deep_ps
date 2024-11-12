@@ -36,7 +36,7 @@ def main(args):
         lam = pm.Bernoulli("lam", logit_p = logit_p, observed = M)
 
         # this line calls an optimizer to find the MAP
-        trace = pm.sample(1000, tune=1000, chains=4, random_seed=42, return_inferencedata=True)
+        trace = pm.sample(1000, tune=1000, chains=1, random_seed=42, return_inferencedata=True)
 
     # Save the results for future analysis.
     trace.to_netcdf(os.path.join(args.target_path, 'ps_results.nc'))

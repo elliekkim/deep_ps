@@ -5,6 +5,7 @@
 #SBATCH --error=ps_pymc.err
 #SBATCH --mail-user=zachary.calhoun@duke.edu
 #SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mem=64G
 
 source ~/.bashrc
 conda activate pymc_env
