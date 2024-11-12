@@ -32,8 +32,8 @@ def main(args):
         
         theta0 = pm.Normal("theta0", mu=0, sigma=1)
         theta1 = pm.Normal("theta1", mu=0, sigma=1)
-        logit_p = theta0 + theta1 * phi
-        lam = pm.Bernoulli("lam", logit_p = logit_p, observed = M)
+        intensity = pm.math.exp(theta0 + theta1 * phi)
+        lam = pm.Poisson("lam", mu=intensity, observed = M)
 
         # this line calls an optimizer to find the MAP
         trace = pm.sample(1000, tune=1000, chains=1, random_seed=42, return_inferencedata=True)
