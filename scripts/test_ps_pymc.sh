@@ -9,7 +9,7 @@
 source ~/.bashrc
 conda activate pymc
 
-python test_ps_pymc.py \
+python scripts/ps_pymc.py \
     --test \
     --file_path ./data/july2023_eve.npy \
     --target_path ./results/
