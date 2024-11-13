@@ -32,15 +32,21 @@ def main(args):
         # y_ = pm.Normal("y", mu=phi, sigma=sigma, observed=y)
 
         # this line calls an optimizer to find the MAP
-        trace = pm.sample(1000, tune=1000, chains=1, random_seed=42, return_inferencedata=True)
+        mp = pm.find_MAP(include_transformed=True)
+        # trace = pm.sample(1000, tune=1000, chains=1, random_seed=42, return_inferencedata=True)
 
     with ps_model:
-        fnew = gp.conditional("fnew", Xnew=X_all, pred_noise=True)
-        ppc = pm.sample_posterior_predictive(trace, vars=[fnew], random_seed=42)
+        mu, var = gp.predict(X_all, point=mp)
 
-    # Save the results for future analysis.
-    trace.to_netcdf(os.path.join(args.target_path, 'gp_trace.nc'))
-    ppc.to_netcdf(os.path.join(args.target_path, 'gp_posterior.nc'))
+    # Save the predictions
+    np.save(os.path.join(args.target_path, 'gp_mu.npy'), mu)
+    np.save(os.path.join(args.target_path, 'gp_var.npy'), var)
+    #     fnew = gp.conditional("fnew", Xnew=X_all, pred_noise=True)
+    #     ppc = pm.sample_posterior_predictive(trace, var_names=['fnew'], random_seed=42)
+
+    # # Save the results for future analysis.
+    # trace.to_netcdf(os.path.join(args.target_path, 'gp_trace.nc'))
+    # ppc.to_netcdf(os.path.join(args.target_path, 'gp_posterior.nc'))
 
 
 def load_data(file_path, test):
