@@ -34,19 +34,18 @@ def main(args):
         intensity = pm.math.exp(theta0 + theta1 * fcond)
         lam = pm.Poisson("lam", mu=intensity, observed = obs)
 
+    print("Model defined. Fitting model.")
+    with ps_model:
         # this line calls an optimizer to find the MAP
         mp = pm.find_MAP(include_transformed=True)
         
-    print("Model fit. Saving results, now.")
-
+    print("Model fit. Saving results.")
     with ps_model:
         mu, var = gp.predict(X_all, point=mp)
 
-    # Save the predictions
+    # Save the predictions and MAP results, too
     np.save(os.path.join(args.target_path, 'ps_mu.npy'), mu)
     np.save(os.path.join(args.target_path, 'ps_var.npy'), var)
-
-    # Save the mp results, too.
     np.save(os.path.join(args.target_path, 'ps_mp.npy'), mp)
 
 
