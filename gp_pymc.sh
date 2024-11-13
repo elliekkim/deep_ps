@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=gp_pymc
 #SBATCH --output=gp_pymc.out
-#SBATCH --error=ps_pymc.err
+#SBATCH --error=gp_pymc.err
 #SBATCH --mail-user=zachary.calhoun@duke.edu
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mem=64G
