@@ -26,13 +26,13 @@ def main(args):
 
         # Place a GP prior over the function f.
         sigma = pm.HalfNormal("sigma", sigma=0.1)
-        y_ = gp.marginal_likelihood("y", X=X_obs, y=y_obs, noise=sigma)
+        y_ = gp.marginal_likelihood("y", X=X_obs, y=y_obs, sigma=sigma)
 
         # phi = gp.prior("phi", X=X)
         # y_ = pm.Normal("y", mu=phi, sigma=sigma, observed=y)
 
         # this line calls an optimizer to find the MAP
-        trace = pm.sample(1000, nuts_sampler='nutpie', tune=1000, chains=1, random_seed=42, return_inferencedata=True)
+        trace = pm.sample(1000, tune=1000, chains=1, random_seed=42, return_inferencedata=True)
 
     with ps_model:
         fnew = gp.conditional("fnew", Xnew=X_all, pred_noise=True)
