@@ -11,6 +11,5 @@ source ~/.bashrc
 conda activate pymc_env
 
 python scripts/gp_pymc.py \
-    --test \
     --file_path ./data/july2023_eve.npy \
     --target_path ./results/

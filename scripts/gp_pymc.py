@@ -11,36 +11,36 @@ import pymc as pm
 def main(args):
 
     # Load the data
-    X, M, y = load_data(args.file_path, args.test)
+    X_obs, y_obs, obs, X_all = load_data(args.file_path, args.test)
 
     # Define the model.
     with pm.Model() as ps_model:
 
         # Specify the covariance function.
-        nu = pm.HalfCauchy('nu', beta=2)
+        nu = pm.Gamma('nu', alpha = 3, beta = 1)
         ls = pm.Gamma("ls", 10, 1.5) #mu=20, sigma=10)
         cov_func = nu**2 * pm.gp.cov.Exponential(2, ls=ls)
 
         # Specify the GP.  The default mean function is `Zero`.
-        gp = pm.gp.Latent(cov_func=cov_func)
+        gp = pm.gp.Marginal(cov_func=cov_func)
 
         # Place a GP prior over the function f.
-        sigma = pm.HalfNormal("sigma", sigma=1)
+        sigma = pm.HalfNormal("sigma", sigma=0.1)
+        y_ = gp.marginal_likelihood("y", X=X_obs, y=y_obs, noise=sigma)
 
-        phi = gp.prior("phi", X=X)
-        y_ = pm.Normal("y", mu=phi, sigma=sigma, observed=y)
+        # phi = gp.prior("phi", X=X)
+        # y_ = pm.Normal("y", mu=phi, sigma=sigma, observed=y)
 
         # this line calls an optimizer to find the MAP
-        # trace = pm.sample(1000, nuts_sampler='nutpie', tune=1000, chains=1, random_seed=42, return_inferencedata=True)
-        print("Fitting the model")
-        mean_field = pm.fit(method="advi")
+        trace = pm.sample(1000, nuts_sampler='nutpie', tune=1000, chains=1, random_seed=42, return_inferencedata=True)
 
-    print("Sampling from the posterior")
     with ps_model:
-        trace = mean_field.sample(1000)
+        fnew = gp.conditional("fnew", Xnew=X_all, pred_noise=True)
+        ppc = pm.sample_posterior_predictive(trace, vars=[fnew], random_seed=42)
 
     # Save the results for future analysis.
-    trace.to_netcdf(os.path.join(args.target_path, 'gp_results.nc'))
+    trace.to_netcdf(os.path.join(args.target_path, 'gp_trace.nc'))
+    ppc.to_netcdf(os.path.join(args.target_path, 'gp_posterior.nc'))
 
 
 def load_data(file_path, test):
@@ -57,30 +57,11 @@ def load_data(file_path, test):
 
     obs = ~np.isnan(y)
 
-    if test:
-        # If we are testing, we only want to select a subsample to train on.
-        obs_coords = coords[obs]
-        obs_y = y[obs]
+    coords_obs = coords[obs]
+    y_obs = y[obs]
 
-        unobs_coords = coords[~obs]
-        unobs_y = y[~obs]
+    return coords_obs, y_obs, obs, coords
 
-        # Sample 100 unobserved coords
-        unobs_vals = np.random.choice(len(unobs_coords), 20, replace=False)
-        sampled_coords = unobs_coords[unobs_vals]
-        sampled_y = unobs_y[unobs_vals]
-        X = np.vstack([obs_coords, sampled_coords])
-        y = np.hstack([obs_y, sampled_y])
-
-        y = np.ma.masked_array(y, mask=np.isnan(y))
-        obs = ~y.mask
-
-        return X, obs, y
-
-    else:
-        y = np.ma.masked_array(y, mask=~obs)
-
-        return coords, obs, y
 
 if __name__ == '__main__':
     # Create an argument parser
