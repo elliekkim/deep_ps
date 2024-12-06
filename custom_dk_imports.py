@@ -215,8 +215,8 @@ class NewLoss(nn.modules.loss._Loss):
         M[observed_indices] = 1
         self.M = torch.tensor(M, dtype=torch.float32)
 
-        self.alpha = nn.Parameter(torch.tensor(0.0))  # Initialize alpha
-        self.beta = nn.Parameter(torch.tensor(1.0))   # Initialize beta
+        self.alpha = nn.Parameter(torch.tensor(-1.0, requires_grad=True))  # Initialize alpha
+        self.beta = nn.Parameter(torch.tensor(-1.0, requires_grad=True))   # Initialize beta
 
     def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor, M: torch.Tensor = None) -> torch.Tensor:
         observation_matching = nn.MSELoss()
@@ -226,6 +226,7 @@ class NewLoss(nn.modules.loss._Loss):
         
         # Compute `sig` based on `y_pred` (batch or full grid)
         sig = torch.sigmoid(self.alpha + self.beta * y_pred)
+        # print(f"Gradients of alpha and beta: {self.alpha.grad}, {self.beta.grad}")
 
         # Ensure M_batch and sig are the same size
         assert M_batch.shape[0] == sig.shape[0], f"Size mismatch: M_batch ({M_batch.shape[0]}) and sig ({sig.shape[0]})"
