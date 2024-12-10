@@ -17,6 +17,9 @@ from typing import Dict, List, Tuple
 import scipy
 from scipy.stats import norm
 
+from torch.optim.lr_scheduler import LRScheduler, StepLR
+
+
 class Erf(nn.Module):
     def __init__(self):
         super().__init__()
@@ -266,7 +269,7 @@ class BaseTrainer(ABC):
     """
     @abstractmethod
     def __init__(self, model: torch.nn.Module, data_generators: Dict, optim: str, optim_params: Dict,
-                 lr_scheduler: torch.optim.lr_scheduler._LRScheduler = None, model_save_dir: str = None, model_name: str = 'model.pt', 
+                 lr_scheduler: torch.optim.lr_scheduler.LRScheduler = None, model_save_dir: str = None, model_name: str = 'model.pt', 
                  loss_fn: torch.nn.modules.loss._Loss = MSELoss(), device: torch.device = torch.device('cpu'), 
                  epochs: int = 100, patience: int = 10, logger: logging.Logger = logging.getLogger("Trainer"), 
                  wandb: object = None) -> None:
@@ -274,7 +277,7 @@ class BaseTrainer(ABC):
         self.data_generators: Dict = data_generators
         self.optim: str = optim
         self.optim_params: Dict = optim_params
-        self.lr_scheduler: torch.optim.lr_scheduler._LRScheduler = lr_scheduler
+        self.lr_scheduler: torch.optim.lr_scheduler.LRScheduler = lr_scheduler
         self.model_save_dir: str = model_save_dir
         self.model_name: str = model_name
         self.loss_fn: torch.nn.modules.loss._Loss = loss_fn
@@ -317,14 +320,24 @@ class BaseTrainer(ABC):
         """
         Validate the inputs to the trainer
         """
+
+        print(f"Base classes of StepLR: {StepLR.__bases__}")
+        print(f"Is _LRScheduler among the bases? {LRScheduler in StepLR.__bases__}")
+
+        if self.lr_scheduler is not None:
+            print(f"Type of lr_scheduler in Trainer: {type(self.lr_scheduler)}")
+            print(f"Is instance of _LRScheduler? {isinstance(self.lr_scheduler, LRScheduler)}")
+            if not isinstance(self.lr_scheduler, LRScheduler):
+                raise TypeError("lr_scheduler must be an instance of torch.optim.lr_scheduler.LRScheduler")
+
         if not isinstance(self.data_generators, Dict):
             raise TypeError("data_generators must be a dictionary.")
         if not set(self.data_generators.keys()).issubset({TRAIN, VAL, TEST}):
             raise ValueError("The keys of data_generators must be a subset of {\'train\', \'val\', and \'test\'}")
         if self.optim not in OPTIMIZERS:
             raise TypeError("The optimizer must be one of the following: {}".format(OPTIMIZERS.keys()))
-        if self.lr_scheduler is not None and not isinstance(self.lr_scheduler, torch.optim.lr_scheduler._LRScheduler):
-            raise TypeError("lr_scheduler must be an instance of torch.optim.lr_scheduler._LRScheduler")
+        if self.lr_scheduler is not None and not isinstance(self.lr_scheduler, LRScheduler):
+            raise TypeError("lr_scheduler must be an instance of torch.optim.lr_scheduler")
         if not isinstance(self.loss_fn, torch.nn.modules.loss._Loss):
             raise TypeError("loss_fn must be an instance of torch.nn.modules.loss._Loss")
         if not isinstance(self.device, torch.device):
@@ -350,6 +363,25 @@ class BaseTrainer(ABC):
                 "epochs": self.epochs,
                 "patience": self.patience
             }, allow_val_change=True)
+
+    def _set_optimizer(self) -> None:
+        """
+        Set the optimizer and initialize the learning rate scheduler if provided
+        """
+        # Initialize the optimizer
+        self.optimizer = OPTIMIZERS[self.optim](self.model.parameters(), **self.optim_params)
+
+        # Initialize the scheduler (if provided)
+        if self.lr_scheduler is not None:
+            if isinstance(self.lr_scheduler, LRScheduler):
+                # Scheduler already initialized; use it directly
+                pass
+            elif callable(self.lr_scheduler):
+                # Scheduler is a class (e.g., StepLR); initialize it
+                self.lr_scheduler = self.lr_scheduler(self.optimizer, **self.optim_params.get("scheduler_params", {}))
+            else:
+                raise TypeError("lr_scheduler must be an instance of or a callable subclass of torch.optim.lr_scheduler.LRScheduler")
+
     
     @abstractmethod
     def train(self) -> None:
@@ -377,7 +409,7 @@ class Trainer(BaseTrainer):
     sw_model: scipy.stats.gaussian_kde, the model for estimating the stabilized weights
     """
     def __init__(self, model: torch.nn.Module, data_generators: Dict, optim: str, optim_params: Dict, window_size: int,
-                 t_idx: int = 0, lr_scheduler: torch.optim.lr_scheduler._LRScheduler = None, model_save_dir: str = None, 
+                 t_idx: int = 0, lr_scheduler: torch.optim.lr_scheduler = None, model_save_dir: str = None, 
                  model_name: str = 'model.pt', loss_fn: torch.nn.modules.loss._Loss = torch.nn.MSELoss(), M_train: torch.Tensor = None, M_val: torch.Tensor = None,
                  gps_model: GeneralizedPropensityScoreModel = None, sw_model: scipy.stats._kde.gaussian_kde = None, 
                  device: torch.device = torch.device('cpu'), epochs: int = 100, patience: int = 10, 
@@ -388,6 +420,7 @@ class Trainer(BaseTrainer):
         self.t_idx: int = t_idx
         self.gps_model: GeneralizedPropensityScoreModel = gps_model
         self.sw_model: scipy.stats._kde.gaussian_kde = sw_model
+
         super(Trainer, self).__init__(model, data_generators, optim, optim_params, lr_scheduler, model_save_dir, model_name, 
                                       loss_fn, device, epochs, patience, logger, wandb)
         self._validate_inputs()
