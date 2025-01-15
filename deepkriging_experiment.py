@@ -79,15 +79,15 @@ def load_and_preprocess(data_path, icar_ps_path, crop_size=None):
     for y, x in observed_indices:
         df.loc[(df['grid_row'] == y) & (df['grid_col'] == x), 'temp_avg'] = data[y, x]
 
-    # Update unobserved points with ICAR+PS predictions
+    # Update unobserved points with ALL ZEROES FOR NOW (We can't fill this in with ICAR+PS data anymore bc the indices won't line up...)
     for y, x in unobserved_indices:
-        df.loc[(df['grid_row'] == y) & (df['grid_col'] == x), 'temp_avg'] = icar_ps_data[y, x]
+        df.loc[(df['grid_row'] == y) & (df['grid_col'] == x), 'temp_avg'] = np.nan
 
     print(f"Processed data: {df['temp_avg'].notna().sum()} non-NaN values.")
     return df, observed_indices
 
 def prepare_tensors(df):
-    """Prepare tensors for training."""
+    """Prepare tensors for training by normalizing grid_points and temp_values."""
     grid_points = df[['grid_row', 'grid_col']].to_numpy()
     temp_values = df['temp_avg'].to_numpy()
 
@@ -102,9 +102,16 @@ def prepare_tensors(df):
 
     return grid_points, temp_values, grid_points_min, grid_points_max
 
-def create_data_loaders(grid_points, temp_values, K, batch_size=32):
+def create_data_loaders(observed_indices, grid_points, temp_values, K, batch_size=32):
     """Create train, validation, and test loaders using DeepKrigingEmbedding."""
+    observed_indices_set = set(observed_indices)
     M = np.zeros(len(grid_points))
+
+    # Mark observed points in M
+    for i in range(len(grid_points)):
+        if tuple(grid_points[i]) in observed_indices_set:
+            M[i] = 1
+    
     s_train, s_val, y_train, y_val, M_train, M_val = train_test_split(grid_points, temp_values, M, test_size=0.2, random_state=42)
 
     M_train = torch.tensor(M_train, dtype=torch.float32)
@@ -207,7 +214,12 @@ def main():
 
     # Prepare tensors and data loaders
     grid_points, temp_values, grid_points_min, grid_points_max = prepare_tensors(df)
-    train_loader, val_loader, input_dim, phi_all, M_train, M_val = create_data_loaders(grid_points, temp_values, config['K'], batch_size=config['batch_size'])
+
+    # Print number of Nan values in temp_values:
+    print("Number of NaN values in temp_values: ", np.isnan(temp_values).sum())
+    print("Number of zeroes (unobserved) vals in temp_values: ", (temp_values == 0).sum())
+
+    train_loader, val_loader, input_dim, phi_all, M_train, M_val = create_data_loaders(observed_indices, grid_points, temp_values, config['K'], batch_size=config['batch_size'])
 
     # Train the model
     deepkriging_model = train_model(train_loader, val_loader, grid_points, grid_points_min, grid_points_max, M_train, M_val, observed_indices, temp_values, config['loss_type'], input_dim, config['K'], config['epochs'])
@@ -233,10 +245,10 @@ def main():
     # Then, compare to a plot of the True Process:
     plt.figure(figsize=(12, 6))
 
-    plt.subplot(1, 2, 1)
-    plt.imshow(temp_values.reshape(cells_y, cells_x), cmap='viridis', aspect='equal')
-    plt.title('True Values')
-    plt.colorbar()
+    # plt.subplot(1, 2, 1)
+    # plt.imshow(temp_values.reshape(cells_y, cells_x), cmap='viridis', aspect='equal')
+    # plt.title('True Values')
+    # plt.colorbar()
 
     plt.subplot(1, 2, 2)
     plt.imshow(y_pred_deepkriging.reshape(cells_y, cells_x), cmap='viridis', aspect='equal')
