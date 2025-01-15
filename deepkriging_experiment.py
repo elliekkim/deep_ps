@@ -150,10 +150,10 @@ def train_model(train_loader, val_loader, grid_points, grid_points_min, grid_poi
     observed_indices = [(y, x) for y, x in observed_indices]
     observed_indices_normalized = normalize_observed_indices(observed_indices, grid_points_min, grid_points_max)
 
-
     grid_points_tuples = [tuple(pt) for pt in grid_points]
     grid_point_idx_dict = {pt: idx for idx, pt in enumerate(grid_points_tuples)}
     observed_grid_cell_indices_flat = []
+
     for i in observed_indices_normalized:
         observed_grid_cell_indices_flat.append(grid_point_idx_dict[i])
     observed_grid_cell_indices_flat = np.array(observed_grid_cell_indices_flat)
@@ -244,7 +244,10 @@ def main():
     plt.colorbar()
 
     # Save the figure to a file
-    output_filename = f"true_vs_dk_k{config['K']}.png"
+    if config.get('crop_size') != None:
+        output_filename = f"true_vs_dk_k{config['K']}_crop{config['crop_size']}.png"
+    else:
+        output_filename = f"true_vs_dk_k{config['K']}_notcrop.png"
     plt.tight_layout()
     plt.savefig(output_filename, dpi=300)
     print(f"Figure saved to {output_filename}")
