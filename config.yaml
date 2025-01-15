@@ -1,0 +1,11 @@
+data_path: "ps_on_durham/july2023_eve.npy"
+icar_ps_path: "ps_on_durham/ps_mu.npy"
+loss_type: "newloss"     # Options: 'newloss', 'mse'
+K: 3                     # Number of basis resolutions
+epochs: 50               # Training epochs
+crop_size:            # Crop size for data
+batch_size: 32           # Batch size for DataLoader
+
+# what other experiments to run to validate model ???
+
+
